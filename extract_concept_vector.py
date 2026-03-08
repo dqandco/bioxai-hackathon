@@ -1,29 +1,32 @@
 """
-Extract the disulfide bond concept vector from ESM3's residual stream.
+Extract concept vectors from ESM3's residual stream at every transformer layer.
 
-1. Load ESM3 and register a forward hook on a middle transformer layer
-2. Run each protein sequence through the model, capturing hidden states
-3. Collect hidden states at disulfide-bonded cysteine positions (positive)
-   and free cysteine positions (negative)
-4. Compute the concept vector as mean(positive) - mean(negative)
-5. Save as a .pt file
+Usage:
+  python extract_concept_vector.py <concept>
 
-ESM3 architecture (from source inspection):
-  - model.encoder: EncodeInputs — fuses sequence, structure, function, SS8,
-    SASA, and residue annotation embeddings by summing them into a single
-    vector per token position
-  - model.transformer: TransformerStack containing .blocks (nn.ModuleList
-    of UnifiedTransformerBlock). The fused representation flows through
-    these blocks as a unified residual stream.
-  - model.output_heads: projects final hidden states to per-track logits
+Available concepts:
+  disulfide    - disulfide-bonded vs free cysteines
+  ss_helix     - helix vs coil residues
+  ss_sheet     - sheet vs coil residues
+  ss_helix_sheet - helix vs sheet residues
+  sasa         - buried vs exposed residues
+  ppi          - interface vs non-interface residues
+  binding      - ligand/metal-binding vs non-binding residues
+  ptm          - post-translationally modified vs unmodified residues
+  disorder     - disordered vs ordered residues
 
-The hook is placed on a middle transformer block (layer n_layers//2).
-After the encoder sums all modality embeddings, each transformer block
-operates on the unified residual stream, so the hidden state at any
-token index i corresponds exactly to residue i (offset by +1 for the
-BOS token prepended during tokenization).
+For each concept, registers a forward hook on EVERY transformer layer,
+runs inference on all chains in the dataset, and saves per-layer concept
+vectors to data/<concept>_concept_vectors.pt.
+
+ESM3 architecture notes:
+  - model.encoder (EncodeInputs) sums all modality embeddings into a
+    unified representation per token position
+  - model.transformer.blocks is an nn.ModuleList of UnifiedTransformerBlock
+  - ESM3 tokenization prepends BOS: residue index i -> token index i+1
 """
 
+import argparse
 from pathlib import Path
 
 import torch
@@ -33,92 +36,120 @@ from esm.sdk.api import ESMProtein
 
 
 DATA_DIR = Path("data")
-PARQUET_PATH = DATA_DIR / "disulfide_features.parquet"
-OUTPUT_PATH = DATA_DIR / "disulfide_concept_vector.pt"
 
-# Which transformer layer to hook (will be set relative to model depth)
-LAYER_FRACTION = 0.5  # middle layer
+# Maps concept name -> (parquet file, positive column, negative column)
+CONCEPTS = {
+    "disulfide": ("disulfide_features.parquet", "disulfide_cys_indices", "free_cys_indices"),
+    "ss_helix": ("ss_features.parquet", "helix_indices", "coil_indices"),
+    "ss_sheet": ("ss_features.parquet", "sheet_indices", "coil_indices"),
+    "ss_helix_sheet": ("ss_features.parquet", "helix_indices", "sheet_indices"),
+    "sasa": ("sasa_features.parquet", "buried_indices", "exposed_indices"),
+    "ppi": ("ppi_features.parquet", "interface_indices", "non_interface_indices"),
+    "binding": ("binding_features.parquet", "binding_indices", "non_binding_indices"),
+    "ptm": ("ptm_features.parquet", "ptm_indices", "non_ptm_indices"),
+    "disorder": ("disorder_features.parquet", "disordered_indices", "ordered_indices"),
+}
 
 
 def main():
-    device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else "cpu"
+    parser = argparse.ArgumentParser(
+        description="Extract per-layer concept vectors from ESM3."
     )
-    print(f"Using device: {device}")
+    parser.add_argument(
+        "concept",
+        choices=sorted(CONCEPTS.keys()),
+        help="Which concept to extract.",
+    )
+    args = parser.parse_args()
+
+    concept = args.concept
+    parquet_file, pos_col, neg_col = CONCEPTS[concept]
+    parquet_path = DATA_DIR / parquet_file
+    output_path = DATA_DIR / f"{concept}_concept_vectors.pt"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Concept: {concept}")
+    print(f"  Positive column: {pos_col}")
+    print(f"  Negative column: {neg_col}")
+    print(f"  Device: {device}")
 
     # Load model
     print("Loading ESM3...")
     model = ESM3.from_pretrained("esm3_sm_open_v1", device=device)
     model.eval()
 
-    # Determine hook layer
     n_layers = len(model.transformer.blocks)
-    hook_layer_idx = n_layers // 2
-    print(f"Model has {n_layers} transformer layers, hooking layer {hook_layer_idx}")
+    print(f"Model has {n_layers} transformer layers")
 
     # Load dataset
-    table = pq.read_table(PARQUET_PATH)
+    table = pq.read_table(parquet_path)
     n_rows = table.num_rows
-    print(f"Loaded {n_rows} chains from {PARQUET_PATH}")
+    print(f"Loaded {n_rows} chains from {parquet_path}")
 
-    # Storage for hook captures
-    captured_hidden = {}
+    # Register hooks on ALL layers
+    captured_hiddens: dict[int, torch.Tensor] = {}
 
-    def hook_fn(module, input, output):
-        # UnifiedTransformerBlock returns a tensor of shape (B, L, D)
-        captured_hidden["states"] = output.detach()
+    def make_hook(layer_idx):
+        def hook_fn(module, input, output):
+            captured_hiddens[layer_idx] = output.detach()
+        return hook_fn
 
-    handle = model.transformer.blocks[hook_layer_idx].register_forward_hook(hook_fn)
+    handles = []
+    for layer_idx in range(n_layers):
+        h = model.transformer.blocks[layer_idx].register_forward_hook(make_hook(layer_idx))
+        handles.append(h)
 
-    positive_vectors = []
-    negative_vectors = []
+    # Per-layer accumulators: list of vectors per layer
+    pos_accum = [[] for _ in range(n_layers)]  # pos_accum[layer] = list of (D,) tensors
+    neg_accum = [[] for _ in range(n_layers)]
     skipped = 0
 
     try:
         for i in range(n_rows):
             sequence = table.column("sequence")[i].as_py()
-            disulfide_indices = table.column("disulfide_cys_indices")[i].as_py()
-            free_indices = table.column("free_cys_indices")[i].as_py()
+            pos_indices = table.column(pos_col)[i].as_py()
+            neg_indices = table.column(neg_col)[i].as_py()
             pdb_id = table.column("pdb_id")[i].as_py()
             chain_id = table.column("chain_id")[i].as_py()
 
-            if not disulfide_indices and not free_indices:
+            if not pos_indices and not neg_indices:
                 continue
 
             if (i + 1) % 50 == 0 or i == 0:
+                n_pos_so_far = len(pos_accum[0])
+                n_neg_so_far = len(neg_accum[0])
                 print(
                     f"  [{i + 1}/{n_rows}] {pdb_id}:{chain_id} "
-                    f"(len={len(sequence)}, +{len(disulfide_indices)}, -{len(free_indices)}) | "
-                    f"pos={len(positive_vectors)}, neg={len(negative_vectors)}"
+                    f"(len={len(sequence)}, +{len(pos_indices)}, -{len(neg_indices)}) | "
+                    f"pos={n_pos_so_far}, neg={n_neg_so_far}"
                 )
 
             try:
-                # Encode sequence -> tokenize with BOS/EOS
                 protein = ESMProtein(sequence=sequence)
                 protein_tensor = model.encode(protein)
 
-                # Forward pass (triggers hook)
                 with torch.no_grad(), torch.amp.autocast(
-                    device_type=device.type, dtype=torch.bfloat16, enabled=device.type != "cpu"
+                    device_type=device.type, dtype=torch.bfloat16,
+                    enabled=device.type != "cpu",
                 ):
                     model.forward(
                         sequence_tokens=protein_tensor.sequence.unsqueeze(0),
                     )
 
-                hidden = captured_hidden["states"]  # (1, L_with_special, D)
+                # Extract vectors from every layer
+                for layer_idx in range(n_layers):
+                    hidden = captured_hiddens[layer_idx]  # (1, L, D)
 
-                # ESM3 tokenization prepends BOS, so residue index i in the
-                # original sequence maps to token index i+1 in the model output.
-                for idx in disulfide_indices:
-                    token_idx = idx + 1  # offset for BOS
-                    vec = hidden[0, token_idx, :].float().cpu()
-                    positive_vectors.append(vec)
+                    for idx in pos_indices:
+                        vec = hidden[0, idx + 1, :].float().cpu()  # +1 for BOS
+                        pos_accum[layer_idx].append(vec)
 
-                for idx in free_indices:
-                    token_idx = idx + 1  # offset for BOS
-                    vec = hidden[0, token_idx, :].float().cpu()
-                    negative_vectors.append(vec)
+                    for idx in neg_indices:
+                        vec = hidden[0, idx + 1, :].float().cpu()  # +1 for BOS
+                        neg_accum[layer_idx].append(vec)
+
+                # Free GPU memory from captured hiddens
+                captured_hiddens.clear()
 
             except Exception as e:
                 skipped += 1
@@ -126,47 +157,63 @@ def main():
                     print(f"    Skipped {pdb_id}:{chain_id}: {e}")
 
     finally:
-        handle.remove()
+        for h in handles:
+            h.remove()
 
+    n_pos = len(pos_accum[0])
+    n_neg = len(neg_accum[0])
     print(f"\nCollection complete:")
-    print(f"  Positive vectors (disulfide): {len(positive_vectors)}")
-    print(f"  Negative vectors (free):      {len(negative_vectors)}")
-    print(f"  Skipped:                       {skipped}")
+    print(f"  Positive vectors: {n_pos}")
+    print(f"  Negative vectors: {n_neg}")
+    print(f"  Skipped:          {skipped}")
 
-    if not positive_vectors or not negative_vectors:
+    if not n_pos or not n_neg:
         print("ERROR: Not enough vectors to compute concept direction.")
         return
 
-    # Stack and compute means
-    pos_tensor = torch.stack(positive_vectors)  # (N_pos, D)
-    neg_tensor = torch.stack(negative_vectors)  # (N_neg, D)
+    # Compute per-layer concept vectors
+    print("Computing per-layer concept vectors...")
+    layer_results = {}
+    for layer_idx in range(n_layers):
+        pos_mean = torch.stack(pos_accum[layer_idx]).mean(dim=0)
+        neg_mean = torch.stack(neg_accum[layer_idx]).mean(dim=0)
+        concept_vec = pos_mean - neg_mean
+        concept_vec_norm = concept_vec / concept_vec.norm()
 
-    pos_mean = pos_tensor.mean(dim=0)  # (D,)
-    neg_mean = neg_tensor.mean(dim=0)  # (D,)
+        layer_results[layer_idx] = {
+            "concept_vector": concept_vec,
+            "concept_vector_normalized": concept_vec_norm,
+            "positive_mean": pos_mean,
+            "negative_mean": neg_mean,
+            "norm": concept_vec.norm().item(),
+        }
 
-    concept_vector = pos_mean - neg_mean  # (D,)
-
-    # Normalize for convenience (save both raw and normalized)
-    concept_vector_normalized = concept_vector / concept_vector.norm()
+    # Free accumulators
+    del pos_accum, neg_accum
 
     save_dict = {
-        "concept_vector": concept_vector,
-        "concept_vector_normalized": concept_vector_normalized,
-        "positive_mean": pos_mean,
-        "negative_mean": neg_mean,
-        "n_positive": len(positive_vectors),
-        "n_negative": len(negative_vectors),
-        "hook_layer": hook_layer_idx,
+        "concept": concept,
+        "pos_col": pos_col,
+        "neg_col": neg_col,
+        "n_positive": n_pos,
+        "n_negative": n_neg,
         "n_layers": n_layers,
-        "d_model": concept_vector.shape[0],
+        "d_model": layer_results[0]["concept_vector"].shape[0],
+        "layers": layer_results,
     }
 
-    torch.save(save_dict, OUTPUT_PATH)
+    torch.save(save_dict, output_path)
 
-    print(f"\nConcept vector saved to {OUTPUT_PATH}")
-    print(f"  Dimension: {concept_vector.shape[0]}")
-    print(f"  Norm (raw): {concept_vector.norm().item():.4f}")
-    print(f"  Hook layer: {hook_layer_idx}/{n_layers}")
+    # Print summary
+    print(f"\nSaved to {output_path}")
+    print(f"  Concept: {concept}")
+    print(f"  Dimension: {save_dict['d_model']}")
+    print(f"  Samples: +{n_pos} / -{n_neg}")
+    print(f"\n  Per-layer norms:")
+    for layer_idx in range(n_layers):
+        norm = layer_results[layer_idx]["norm"]
+        bar = "█" * int(norm / 2)
+        print(f"    Layer {layer_idx:2d}: {norm:7.2f}  {bar}")
 
 
 if __name__ == "__main__":
