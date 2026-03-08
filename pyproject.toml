@@ -3,7 +3,7 @@ name = "bioxai-hackathon"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "biopython>=1.86",
     "esm>=3.2.1.post1",
