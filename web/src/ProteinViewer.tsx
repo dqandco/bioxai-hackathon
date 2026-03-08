@@ -29,7 +29,9 @@ declare global {
         setClickable: (selector: object, clickable: boolean, callback: (atom: { resi: number; resn: string }) => void) => void;
         render: () => void;
         clear: () => void;
+        zoomTo: (selector?: object, duration?: number) => void;
       };
+      assignPDBBonds?: (viewer: unknown) => void;
     };
   }
 }
@@ -41,6 +43,7 @@ interface ProteinViewerProps {
   residueConcepts: Record<number | string, string>;
   residueProjections?: Record<string, Record<string, number>>;
   onResidueSelect?: (resi: number, resn: string, oneLetter: string, conceptScores: Record<string, number>) => void;
+  onResidueDeselect?: () => void;
   conceptColors?: Record<string, string>;
   selectedResidue?: number | null;
   viewMode?: ViewMode;
@@ -68,6 +71,7 @@ export function ProteinViewer({
   residueConcepts,
   residueProjections = {},
   onResidueSelect,
+  onResidueDeselect,
   conceptColors = CONCEPT_COLORS,
   selectedResidue = null,
   viewMode = 'cartoon',
@@ -75,6 +79,8 @@ export function ProteinViewer({
 }: ProteinViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<ReturnType<typeof window.$3Dmol.createViewer> | null>(null);
+  const clickedResidueRef = useRef(false);
+  const mouseDownRef = useRef<{ x: number; y: number } | null>(null);
   const activeSet = activeConcepts ?? new Set(Object.keys(CONCEPT_COLORS));
 
   // Create/destroy viewer only when pdb changes
@@ -95,6 +101,10 @@ export function ProteinViewer({
 
     const viewer = $3Dmol.createViewer(element, { backgroundColor: '0xf5f3ef' });
     viewer.addModel(pdb, 'pdb');
+    if (typeof $3Dmol.assignPDBBonds === 'function') {
+      $3Dmol.assignPDBBonds(viewer);
+    }
+    viewer.zoomTo();
     viewerRef.current = viewer;
 
     return () => {
@@ -113,6 +123,7 @@ export function ProteinViewer({
 
     if (onResidueSelect) {
       viewer.setClickable({}, true, (atom: { resi: number; resn: string }) => {
+        clickedResidueRef.current = true;
         const resi = atom.resi;
         const resn = atom.resn;
         const oneLetter = RESIDUE_3TO1[resn] ?? 'X';
@@ -143,8 +154,51 @@ export function ProteinViewer({
       }
     }
 
+    // Zoom to selected residue and center view for rotation around it
+    if (selectedResidue != null && viewer.zoomTo) {
+      viewer.zoomTo({ resi: selectedResidue }, 400);
+    }
+
     viewer.render();
   }, [pdb, residueConcepts, residueProjections, onResidueSelect, viewMode, selectedResidue, conceptColors, activeSet]);
+
+  // Click-off to deselect: only when clicking empty space (outside protein), not when rotating
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element || !pdb || !onResidueDeselect) return;
+
+    const DRAG_THRESHOLD = 5;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      mouseDownRef.current = { x: e.clientX, y: e.clientY };
+    };
+
+    const handleClick = (e: MouseEvent) => {
+      if (selectedResidue == null) return;
+      const wasResidue = clickedResidueRef.current;
+      clickedResidueRef.current = false;
+
+      // Don't deselect if we were dragging (rotate) - only on actual clicks
+      const start = mouseDownRef.current;
+      mouseDownRef.current = null;
+      if (start) {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) return; // was a drag
+      }
+
+      if (!wasResidue) {
+        onResidueDeselect();
+      }
+    };
+
+    element.addEventListener('mousedown', handleMouseDown);
+    element.addEventListener('click', handleClick);
+    return () => {
+      element.removeEventListener('mousedown', handleMouseDown);
+      element.removeEventListener('click', handleClick);
+    };
+  }, [pdb, onResidueDeselect, selectedResidue]);
 
   if (!pdb) {
     return (

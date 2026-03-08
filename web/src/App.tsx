@@ -37,6 +37,7 @@ const CONCEPT_LABELS: Record<string, string> = {
 
 function App() {
   const [pdb, setPdb] = useState<string>('')
+  const [pdbName, setPdbName] = useState<string>('')
   const [inferenceData, setInferenceData] = useState<InferenceResponse | null>(null)
   const [seqIdxToResi, setSeqIdxToResi] = useState<number[]>([])
   const [residueConcepts, setResidueConcepts] = useState<ResidueConcepts>({})
@@ -84,6 +85,7 @@ function App() {
       if (!res.ok) throw new Error('Failed to fetch demo PDB')
       const text = await res.text()
       setPdb(text)
+      setPdbName('1CRN')
       const { sequence, seqIdxToResi: seqToResi } = parsePdbSequence(text)
       setSeqIdxToResi(seqToResi)
       await runInference(sequence)
@@ -102,7 +104,9 @@ function App() {
       const reader = new FileReader()
       reader.onload = async () => {
         const text = String(reader.result)
+        const name = file.name.replace(/\.pdb$/i, '').toUpperCase() || 'PDB'
         setPdb(text)
+        setPdbName(name)
         try {
           const { sequence, seqIdxToResi: seqToResi } = parsePdbSequence(text)
           setSeqIdxToResi(seqToResi)
@@ -182,12 +186,23 @@ function App() {
     []
   )
 
+  const handleResidueDeselect = useCallback(() => {
+    setSelectedResidue(null)
+  }, [])
+
   const effectiveLayer = inferenceData ? Math.min(selectedLayer, inferenceData.n_layers - 1) : 0
 
   return (
     <div className="min-h-screen p-6" style={{ backgroundColor: 'var(--bg-soft)', color: 'var(--text-primary)' }}>
       <div className="mx-auto max-w-6xl space-y-5">
-        <h1 className="text-xl font-semibold">Protein Concept Vector Viewer</h1>
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-xl font-semibold">Protein Concept Vector Viewer</h1>
+          {pdbName && (
+            <span className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+              {pdbName}
+            </span>
+          )}
+        </div>
         <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
           Visualize residues colored by their dominant concept. Click a residue to see amino acid and similarity scores.
         </p>
@@ -196,7 +211,8 @@ function App() {
           <button
             onClick={loadDemo}
             disabled={loading}
-            className="btn-accent px-3 py-1.5 text-[13px] disabled:opacity-50 rounded font-medium transition-colors text-white"
+            className="px-3 py-1.5 text-[13px] disabled:opacity-50 rounded font-medium transition-opacity hover:opacity-80"
+            style={{ backgroundColor: 'var(--bg-card)', color: 'var(--text-primary)' }}
           >
             {loading ? 'Loading...' : 'Load demo (1CRN)'}
           </button>
@@ -294,6 +310,7 @@ function App() {
                 residueConcepts={residueConceptsForLayer}
                 residueProjections={residueProjectionsForLayer}
                 onResidueSelect={handleResidueSelect}
+                onResidueDeselect={handleResidueDeselect}
                 selectedResidue={selectedResidue?.resi ?? null}
                 viewMode={viewMode}
                 activeConcepts={activeConcepts}
@@ -318,7 +335,7 @@ function App() {
                       .sort(([, a], [, b]) => b - a)
                       .map(([concept, score]) => (
                         <div key={concept} className="flex items-center justify-between text-[12px]">
-                          <span style={{ color: 'var(--text-secondary)' }}>{concept}</span>
+                          <span style={{ color: 'var(--text-secondary)' }}>{CONCEPT_LABELS[concept] ?? concept}</span>
                           <span className="font-mono">{score.toFixed(3)}</span>
                         </div>
                       ))}
