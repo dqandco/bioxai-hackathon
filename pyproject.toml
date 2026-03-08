@@ -8,7 +8,9 @@ dependencies = [
     "biopython>=1.86",
     "modal",
     "esm>=3.2.1.post1",
+    "fastapi>=0.115.0",
     "pyarrow>=23.0.1",
     "torch>=2.2.0",
     "torchvision",
+    "uvicorn[standard]>=0.34.0",
 ]
