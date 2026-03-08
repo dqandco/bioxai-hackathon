@@ -261,14 +261,16 @@ function App() {
                 <div className="mb-3">
                   <button
                     type="button"
-                    onClick={() => setUncheckedFallbackRank((r) => (r + 1) % 8)}
+                    onClick={() => setUncheckedFallbackRank((r) => (r + 1) % 9)}
                     className="px-2 py-1 text-[11px] rounded transition-opacity hover:opacity-80"
                     style={{ backgroundColor: 'var(--bg-soft)', color: 'var(--text-secondary)' }}
                   >
-                    Next best for unchecked ({uncheckedFallbackRank === 0 ? '2nd' : uncheckedFallbackRank === 1 ? '3rd' : `${uncheckedFallbackRank + 2}th`})
+                    {uncheckedFallbackRank === 0
+                      ? 'Show next best for unchecked'
+                      : `Next best for unchecked (${uncheckedFallbackRank === 1 ? '2nd' : uncheckedFallbackRank === 2 ? '3rd' : `${uncheckedFallbackRank + 1}th`})`}
                   </button>
                   <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                    When a concept is unchecked, show its next-best rank for those residues. Click to cycle.
+                    Unchecked residues are hidden by default. Click to show their next-best concept.
                   </p>
                 </div>
               )}
@@ -282,12 +284,14 @@ function App() {
                       type="checkbox"
                       checked={activeConcepts.has(concept)}
                       onChange={() => {
+                        const isCheckingBack = !activeConcepts.has(concept)
                         setActiveConcepts((prev) => {
                           const next = new Set(prev)
                           if (next.has(concept)) next.delete(concept)
                           else next.add(concept)
                           return next
                         })
+                        if (isCheckingBack) setUncheckedFallbackRank(0)
                       }}
                       className="mt-1 h-3 w-3 shrink-0 rounded-sm accent-[var(--accent)]"
                     />

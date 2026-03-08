@@ -164,11 +164,11 @@ export function ProteinViewer({
       const isSelected = key === selectedKey;
       const opacity = isSelected ? undefined : dimOpacity;
 
-      // If dominant concept is unchecked, use next-best fallback (2nd, 3rd, etc.)
+      // If dominant concept is unchecked: rank 0 = hidden (gray), rank >= 1 = show next-best fallback
       const scores = residueProjections[key];
       let displayConcept = concept;
-      if (scores && !activeSet.has(concept)) {
-        const fallback = getConceptAtRank(scores, 1 + uncheckedFallbackRank);
+      if (scores && !activeSet.has(concept) && uncheckedFallbackRank >= 1) {
+        const fallback = getConceptAtRank(scores, uncheckedFallbackRank);
         if (fallback) displayConcept = fallback;
       }
 
