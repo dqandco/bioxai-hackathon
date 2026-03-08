@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "biopython>=1.86",
+    "modal",
     "esm>=3.2.1.post1",
     "pyarrow>=23.0.1",
     "torch>=2.2.0",
