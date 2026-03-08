@@ -1,0 +1,13 @@
+[project]
+name = "bioxai-hackathon"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "biopython>=1.86",
+    "esm>=3.2.1.post1",
+    "pyarrow>=23.0.1",
+    "torch>=2.2.0",
+    "torchvision",
+]
