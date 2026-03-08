@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { chainResiKey } from './pdbParser';
 
 export const RESIDUE_3TO1: Record<string, string> = {
   ALA: 'A', ARG: 'R', ASN: 'N', ASP: 'D', CYS: 'C', GLN: 'Q', GLU: 'E',
@@ -38,16 +39,29 @@ declare global {
 
 export type ViewMode = 'cartoon' | 'stick' | 'line' | 'ballstick';
 
+export interface SelectedResidueSpec {
+  chain: string;
+  resi: number;
+}
+
 interface ProteinViewerProps {
   pdb: string;
   residueConcepts: Record<number | string, string>;
   residueProjections?: Record<string, Record<string, number>>;
-  onResidueSelect?: (resi: number, resn: string, oneLetter: string, conceptScores: Record<string, number>) => void;
+  onResidueSelect?: (chain: string, resi: number, resn: string, oneLetter: string, conceptScores: Record<string, number>) => void;
   onResidueDeselect?: () => void;
   conceptColors?: Record<string, string>;
-  selectedResidue?: number | null;
+  selectedResidue?: SelectedResidueSpec | null;
+  /** When a residue's dominant concept is unchecked, use this rank (0=2nd best, 1=3rd best, etc.) */
+  uncheckedFallbackRank?: number;
   viewMode?: ViewMode;
   activeConcepts?: Set<string>;
+}
+
+/** Get concept at rank index (0=best, 1=2nd best, etc.) from scores. */
+function getConceptAtRank(scores: Record<string, number>, rank: number): string {
+  const sorted = Object.entries(scores).sort(([, a], [, b]) => b - a);
+  return sorted[rank]?.[0] ?? sorted[0]?.[0] ?? '';
 }
 
 const HIGHLIGHT_COLOR = '#2d2a26';
@@ -74,6 +88,7 @@ export function ProteinViewer({
   onResidueDeselect,
   conceptColors = CONCEPT_COLORS,
   selectedResidue = null,
+  uncheckedFallbackRank = 0,
   viewMode = 'cartoon',
   activeConcepts,
 }: ProteinViewerProps) {
@@ -122,45 +137,68 @@ export function ProteinViewer({
     if (!viewer || !pdb) return;
 
     if (onResidueSelect) {
-      viewer.setClickable({}, true, (atom: { resi: number; resn: string }) => {
+      viewer.setClickable({}, true, (atom: { chain?: string; resi: number; resn: string }) => {
         clickedResidueRef.current = true;
+        const chain = atom.chain ?? ' ';
         const resi = atom.resi;
         const resn = atom.resn;
         const oneLetter = RESIDUE_3TO1[resn] ?? 'X';
-        const conceptScores = residueProjections[String(resi)] ?? {};
-        onResidueSelect(resi, resn, oneLetter, conceptScores);
+        const key = chainResiKey(chain, resi);
+        const conceptScores = residueProjections[key] ?? {};
+        onResidueSelect(chain, resi, resn, oneLetter, conceptScores);
       });
     }
 
     const dimOpacity = selectedResidue != null ? 0.5 : undefined;
+    const selectedKey = selectedResidue ? chainResiKey(selectedResidue.chain, selectedResidue.resi) : null;
 
     // Default style for residues not in the map
     viewer.setStyle({}, getBaseStyle(viewMode, DEFAULT_COLOR, dimOpacity));
 
-    for (const [resi, concept] of Object.entries(residueConcepts)) {
-      const isActive = activeSet.has(concept);
-      const color = isActive ? (conceptColors[concept] ?? DEFAULT_COLOR) : DEFAULT_COLOR;
-      const resiNum = parseInt(String(resi), 10);
-      const isSelected = resiNum === selectedResidue;
+    for (const [key, concept] of Object.entries(residueConcepts)) {
+      // Parse "chain:resi" format
+      const colonIdx = key.indexOf(':');
+      const chain = colonIdx >= 0 ? key.slice(0, colonIdx) : ' ';
+      const resiNum = parseInt(colonIdx >= 0 ? key.slice(colonIdx + 1) : key, 10);
+
+      const isSelected = key === selectedKey;
       const opacity = isSelected ? undefined : dimOpacity;
+
+      // If dominant concept is unchecked, use next-best fallback (2nd, 3rd, etc.)
+      const scores = residueProjections[key];
+      let displayConcept = concept;
+      if (scores && !activeSet.has(concept)) {
+        const fallback = getConceptAtRank(scores, 1 + uncheckedFallbackRank);
+        if (fallback) displayConcept = fallback;
+      }
+
+      const isActive = activeSet.has(displayConcept);
+      const color = isActive ? (conceptColors[displayConcept] ?? DEFAULT_COLOR) : DEFAULT_COLOR;
+
+      const selector = chain.trim() ? { chain, resi: resiNum } : { resi: resiNum };
 
       if (isSelected) {
         viewer.setStyle(
-          { resi: resiNum },
+          selector,
           { ...getBaseStyle(viewMode, color), stick: { color: HIGHLIGHT_COLOR, radius: 0.35 } }
         );
       } else {
-        viewer.setStyle({ resi: resiNum }, getBaseStyle(viewMode, color, opacity));
+        viewer.setStyle(selector, getBaseStyle(viewMode, color, opacity));
       }
     }
 
-    // Zoom to selected residue and center view for rotation around it
-    if (selectedResidue != null && viewer.zoomTo) {
-      viewer.zoomTo({ resi: selectedResidue }, 400);
-    }
-
     viewer.render();
-  }, [pdb, residueConcepts, residueProjections, onResidueSelect, viewMode, selectedResidue, conceptColors, activeSet]);
+  }, [pdb, residueConcepts, residueProjections, onResidueSelect, viewMode, selectedResidue, uncheckedFallbackRank, conceptColors, activeSet]);
+
+  // Zoom to selected residue only when selection changes (not when layer/concepts change)
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !pdb || selectedResidue == null || !viewer.zoomTo) return;
+    const sel = selectedResidue.chain.trim()
+      ? { chain: selectedResidue.chain, resi: selectedResidue.resi }
+      : { resi: selectedResidue.resi };
+    viewer.zoomTo(sel, 400);
+  }, [pdb, selectedResidue]);
 
   // Click-off to deselect: only when clicking empty space (outside protein), not when rotating
   useEffect(() => {

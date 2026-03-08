@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react'
 import { ProteinViewer, CONCEPT_COLORS, type ViewMode } from './ProteinViewer'
-import { parsePdbSequence } from './pdbParser'
+import { parsePdbSequence, chainResiKey, type ChainResi } from './pdbParser'
 
 const API_BASE = '/api'
 const DEMO_PDB_URL = 'https://files.rcsb.org/view/1CRN.pdb'
@@ -17,6 +17,7 @@ interface InferenceResponse {
 }
 
 interface SelectedResidue {
+  chain: string
   resi: number
   resn: string
   oneLetter: string
@@ -39,10 +40,11 @@ function App() {
   const [pdb, setPdb] = useState<string>('')
   const [pdbName, setPdbName] = useState<string>('')
   const [inferenceData, setInferenceData] = useState<InferenceResponse | null>(null)
-  const [seqIdxToResi, setSeqIdxToResi] = useState<number[]>([])
+  const [seqIdxToResi, setSeqIdxToResi] = useState<ChainResi[]>([])
   const [residueConcepts, setResidueConcepts] = useState<ResidueConcepts>({})
   const [selectedLayer, setSelectedLayer] = useState(0)
   const [selectedResidue, setSelectedResidue] = useState<SelectedResidue | null>(null)
+  const [uncheckedFallbackRank, setUncheckedFallbackRank] = useState(0)
   const [viewMode, setViewMode] = useState<ViewMode>('cartoon')
   const [activeConcepts, setActiveConcepts] = useState<Set<string>>(() => new Set(Object.keys(CONCEPT_COLORS)))
   const [error, setError] = useState<string>('')
@@ -155,8 +157,10 @@ function App() {
     const outProjections: ResidueProjections = {}
 
     for (let seqIdx = 0; seqIdx < inferenceData.n_residues; seqIdx++) {
-      const resi = seqIdxToResi[seqIdx]
-      if (resi == null) continue
+      const cr = seqIdxToResi[seqIdx]
+      if (!cr) continue
+
+      const key = chainResiKey(cr.chain, cr.resi)
 
       let maxScore = -Infinity
       let maxConcept = ''
@@ -172,16 +176,16 @@ function App() {
         }
       }
 
-      outConcepts[String(resi)] = maxConcept
-      outProjections[String(resi)] = scores
+      outConcepts[key] = maxConcept
+      outProjections[key] = scores
     }
 
     return { residueConceptsForLayer: outConcepts, residueProjectionsForLayer: outProjections }
   }, [inferenceData, seqIdxToResi, selectedLayer, residueConcepts])
 
   const handleResidueSelect = useCallback(
-    (resi: number, resn: string, oneLetter: string, conceptScores: Record<string, number>) => {
-      setSelectedResidue({ resi, resn, oneLetter, conceptScores })
+    (chain: string, resi: number, resn: string, oneLetter: string, conceptScores: Record<string, number>) => {
+      setSelectedResidue({ chain, resi, resn, oneLetter, conceptScores })
     },
     []
   )
@@ -253,6 +257,21 @@ function App() {
           <div className="flex flex-col lg:flex-row">
             <aside className="lg:w-56 shrink-0 p-4">
               <h2 className="text-[12px] font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Color key</h2>
+              {inferenceData && (
+                <div className="mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setUncheckedFallbackRank((r) => (r + 1) % 8)}
+                    className="px-2 py-1 text-[11px] rounded transition-opacity hover:opacity-80"
+                    style={{ backgroundColor: 'var(--bg-soft)', color: 'var(--text-secondary)' }}
+                  >
+                    Next best for unchecked ({uncheckedFallbackRank === 0 ? '2nd' : uncheckedFallbackRank === 1 ? '3rd' : `${uncheckedFallbackRank + 2}th`})
+                  </button>
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    When a concept is unchecked, show its next-best rank for those residues. Click to cycle.
+                  </p>
+                </div>
+              )}
               <div className="space-y-1.5">
                 {Object.keys(CONCEPT_COLORS).map((concept) => (
                   <label
@@ -311,7 +330,8 @@ function App() {
                 residueProjections={residueProjectionsForLayer}
                 onResidueSelect={handleResidueSelect}
                 onResidueDeselect={handleResidueDeselect}
-                selectedResidue={selectedResidue?.resi ?? null}
+                selectedResidue={selectedResidue}
+                uncheckedFallbackRank={uncheckedFallbackRank}
                 viewMode={viewMode}
                 activeConcepts={activeConcepts}
               />
@@ -319,7 +339,7 @@ function App() {
                 <div className="rounded p-4" style={{ backgroundColor: 'var(--bg-soft)' }}>
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
-                      Residue {selectedResidue.resi}: {selectedResidue.resn} ({selectedResidue.oneLetter})
+                      Residue {selectedResidue.chain.trim() ? `${selectedResidue.chain}:` : ''}{selectedResidue.resi} — {selectedResidue.resn} ({selectedResidue.oneLetter})
                     </h3>
                     <button
                       onClick={() => setSelectedResidue(null)}
