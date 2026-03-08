@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from 'react'
-import { ProteinViewer, CONCEPT_COLORS } from './ProteinViewer'
+import { ProteinViewer, CONCEPT_COLORS, type ViewMode } from './ProteinViewer'
 import { parsePdbSequence } from './pdbParser'
 
 const API_BASE = '/api'
@@ -42,6 +42,8 @@ function App() {
   const [residueConcepts, setResidueConcepts] = useState<ResidueConcepts>({})
   const [selectedLayer, setSelectedLayer] = useState(0)
   const [selectedResidue, setSelectedResidue] = useState<SelectedResidue | null>(null)
+  const [viewMode, setViewMode] = useState<ViewMode>('cartoon')
+  const [activeConcepts, setActiveConcepts] = useState<Set<string>>(() => new Set(Object.keys(CONCEPT_COLORS)))
   const [error, setError] = useState<string>('')
   const [loading, setLoading] = useState(false)
 
@@ -66,6 +68,7 @@ function App() {
       const data = (await res.json()) as InferenceResponse
       setInferenceData(data)
       setSelectedLayer(data.n_layers > 0 ? Math.floor(data.n_layers / 2) : 0)
+      setActiveConcepts(new Set(data.concepts))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Inference failed')
     } finally {
@@ -126,6 +129,7 @@ function App() {
         const data = JSON.parse(String(reader.result)) as ResidueConcepts
         setResidueConcepts(data)
         setInferenceData(null)
+        setActiveConcepts(new Set(Object.values(data)))
       } catch {
         setError('Invalid JSON file')
       }
@@ -181,40 +185,40 @@ function App() {
   const effectiveLayer = inferenceData ? Math.min(selectedLayer, inferenceData.n_layers - 1) : 0
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-6">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <h1 className="text-3xl font-bold">Protein Concept Vector Viewer</h1>
-        <p className="text-gray-400">
+    <div className="min-h-screen p-6" style={{ backgroundColor: 'var(--bg-soft)', color: 'var(--text-primary)' }}>
+      <div className="mx-auto max-w-6xl space-y-5">
+        <h1 className="text-xl font-semibold">Protein Concept Vector Viewer</h1>
+        <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>
           Visualize residues colored by their dominant concept. Click a residue to see amino acid and similarity scores.
         </p>
 
-        <div className="flex flex-wrap gap-4">
+        <div className="flex flex-wrap gap-3">
           <button
             onClick={loadDemo}
             disabled={loading}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg font-medium transition-colors"
+            className="btn-accent px-3 py-1.5 text-[13px] disabled:opacity-50 rounded font-medium transition-colors text-white"
           >
             {loading ? 'Loading...' : 'Load demo (1CRN)'}
           </button>
-          <label className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium cursor-pointer transition-colors">
+          <label className="px-3 py-1.5 text-[13px] rounded font-medium cursor-pointer transition-opacity hover:opacity-80" style={{ backgroundColor: 'var(--bg-card)', color: 'var(--text-primary)' }}>
             Upload PDB
             <input type="file" accept=".pdb" onChange={handlePdbUpload} className="hidden" />
           </label>
-          <label className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg font-medium cursor-pointer transition-colors">
+          <label className="px-3 py-1.5 text-[13px] rounded font-medium cursor-pointer transition-opacity hover:opacity-80" style={{ backgroundColor: 'var(--bg-card)', color: 'var(--text-primary)' }}>
             Upload residue map (JSON)
             <input type="file" accept=".json" onChange={handleJsonUpload} className="hidden" />
           </label>
         </div>
 
         {error && (
-          <div className="rounded-lg bg-red-900/50 border border-red-700 px-4 py-2 text-red-200">
+          <div className="rounded bg-red-100 px-3 py-2 text-[13px] text-red-800">
             {error}
           </div>
         )}
 
         {inferenceData && nLayers > 1 && (
-          <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-4">
-            <label className="block text-sm font-semibold text-gray-300 mb-2">
+          <div className="rounded p-4" style={{ backgroundColor: 'var(--bg-card)' }}>
+            <label className="block text-[12px] font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
               Layer {effectiveLayer + 1} / {nLayers}
             </label>
             <input
@@ -223,57 +227,98 @@ function App() {
               max={nLayers - 1}
               value={effectiveLayer}
               onChange={(e) => setSelectedLayer(parseInt(e.target.value, 10))}
-              className="w-full max-w-md accent-indigo-500"
+              className="w-full max-w-md"
+              style={{ accentColor: 'var(--accent)' }}
             />
           </div>
         )}
 
-        <div className="rounded-xl border border-gray-700 bg-gray-900/50 overflow-hidden shadow-xl">
+        <div className="rounded overflow-hidden" style={{ backgroundColor: 'var(--bg-card)' }}>
           <div className="flex flex-col lg:flex-row">
-            <aside className="lg:w-64 shrink-0 border-b lg:border-b-0 lg:border-r border-gray-700 p-4 bg-gray-900/80">
-              <h2 className="text-sm font-semibold text-gray-300 mb-3">Color key</h2>
-              <div className="space-y-2">
+            <aside className="lg:w-56 shrink-0 p-4">
+              <h2 className="text-[12px] font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Color key</h2>
+              <div className="space-y-1.5">
                 {Object.keys(CONCEPT_COLORS).map((concept) => (
-                  <div key={concept} className="flex items-start gap-2">
-                    <div
-                      className="mt-0.5 h-4 w-4 shrink-0 rounded"
-                      style={{ backgroundColor: CONCEPT_COLORS[concept] ?? '#94a3b8' }}
+                  <label
+                    key={concept}
+                    className="flex items-start gap-2 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={activeConcepts.has(concept)}
+                      onChange={() => {
+                        setActiveConcepts((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(concept)) next.delete(concept)
+                          else next.add(concept)
+                          return next
+                        })
+                      }}
+                      className="mt-1 h-3 w-3 shrink-0 rounded-sm accent-[var(--accent)]"
                     />
-                    <div>
-                      <span className="text-sm font-medium text-white">{concept}</span>
-                      <p className="text-xs text-gray-500">{CONCEPT_LABELS[concept] ?? ''}</p>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div
+                        className="h-3 w-3 shrink-0 rounded-sm"
+                        style={{ backgroundColor: CONCEPT_COLORS[concept] ?? '#94a3b8' }}
+                      />
+                      <div>
+                        <span className="text-[12px] font-medium">{concept}</span>
+                        <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{CONCEPT_LABELS[concept] ?? ''}</p>
+                      </div>
                     </div>
-                  </div>
+                  </label>
                 ))}
               </div>
             </aside>
-            <main className="flex-1 min-w-0 p-4 bg-gray-900/30 space-y-4">
+            <main className="flex-1 min-w-0 p-4 space-y-4">
+              {pdb && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>View:</span>
+                  {(['cartoon', 'stick', 'line', 'ballstick'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => setViewMode(mode)}
+                      className="px-2 py-1 text-[11px] rounded transition-opacity hover:opacity-80 capitalize"
+                      style={{
+                        backgroundColor: viewMode === mode ? 'var(--accent)' : 'var(--bg-soft)',
+                        color: viewMode === mode ? 'white' : 'var(--text-secondary)',
+                      }}
+                    >
+                      {mode === 'ballstick' ? 'Ball+Stick' : mode}
+                    </button>
+                  ))}
+                </div>
+              )}
               <ProteinViewer
                 pdb={pdb}
                 residueConcepts={residueConceptsForLayer}
                 residueProjections={residueProjectionsForLayer}
                 onResidueSelect={handleResidueSelect}
+                selectedResidue={selectedResidue?.resi ?? null}
+                viewMode={viewMode}
+                activeConcepts={activeConcepts}
               />
               {selectedResidue && (
-                <div className="rounded-lg border border-gray-600 bg-gray-800/50 p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold text-gray-300">
+                <div className="rounded p-4" style={{ backgroundColor: 'var(--bg-soft)' }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
                       Residue {selectedResidue.resi}: {selectedResidue.resn} ({selectedResidue.oneLetter})
                     </h3>
                     <button
                       onClick={() => setSelectedResidue(null)}
-                      className="text-xs text-gray-500 hover:text-white"
+                      className="text-[11px] hover:opacity-70"
+                      style={{ color: 'var(--text-muted)' }}
                     >
                       Clear
                     </button>
                   </div>
-                  <p className="text-xs text-gray-500 mb-2">Scores at layer {effectiveLayer + 1}</p>
-                  <div className="space-y-1">
+                  <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Scores at layer {effectiveLayer + 1}</p>
+                  <div className="space-y-0.5">
                     {Object.entries(selectedResidue.conceptScores)
                       .sort(([, a], [, b]) => b - a)
                       .map(([concept, score]) => (
-                        <div key={concept} className="flex items-center justify-between text-sm">
-                          <span className="text-gray-300">{concept}</span>
+                        <div key={concept} className="flex items-center justify-between text-[12px]">
+                          <span style={{ color: 'var(--text-secondary)' }}>{concept}</span>
                           <span className="font-mono">{score.toFixed(3)}</span>
                         </div>
                       ))}

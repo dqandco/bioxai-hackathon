@@ -34,12 +34,33 @@ declare global {
   }
 }
 
+export type ViewMode = 'cartoon' | 'stick' | 'line' | 'ballstick';
+
 interface ProteinViewerProps {
   pdb: string;
   residueConcepts: Record<number | string, string>;
   residueProjections?: Record<string, Record<string, number>>;
   onResidueSelect?: (resi: number, resn: string, oneLetter: string, conceptScores: Record<string, number>) => void;
   conceptColors?: Record<string, string>;
+  selectedResidue?: number | null;
+  viewMode?: ViewMode;
+  activeConcepts?: Set<string>;
+}
+
+const HIGHLIGHT_COLOR = '#2d2a26';
+
+function getBaseStyle(viewMode: ViewMode, color: string, opacity?: number): Record<string, unknown> {
+  const opacityProp = opacity != null ? { opacity } : {};
+  switch (viewMode) {
+    case 'stick':
+      return { stick: { color, radius: 0.3, ...opacityProp } };
+    case 'line':
+      return { line: { color, ...opacityProp } };
+    case 'ballstick':
+      return { stick: { color, radius: 0.15, ...opacityProp }, sphere: { color, scale: 0.25, ...opacityProp } };
+    default:
+      return { cartoon: { color, ...opacityProp } };
+  }
 }
 
 export function ProteinViewer({
@@ -48,25 +69,47 @@ export function ProteinViewer({
   residueProjections = {},
   onResidueSelect,
   conceptColors = CONCEPT_COLORS,
+  selectedResidue = null,
+  viewMode = 'cartoon',
+  activeConcepts,
 }: ProteinViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<ReturnType<typeof window.$3Dmol.createViewer> | null>(null);
+  const activeSet = activeConcepts ?? new Set(Object.keys(CONCEPT_COLORS));
 
+  // Create/destroy viewer only when pdb changes
   useEffect(() => {
     const element = containerRef.current;
     const $3Dmol = window.$3Dmol;
 
-    if (!element || !$3Dmol || !pdb) return;
+    if (!element || !$3Dmol) return;
 
-    const viewer = $3Dmol.createViewer(element, { backgroundColor: '0x1e293b' });
-    viewer.addModel(pdb, 'pdb');
-
-    // Default style for residues not in the map
-    viewer.setStyle({}, { cartoon: { color: DEFAULT_COLOR } });
-
-    for (const [resi, concept] of Object.entries(residueConcepts)) {
-      const color = conceptColors[concept] ?? DEFAULT_COLOR;
-      viewer.setStyle({ resi: parseInt(String(resi), 10) }, { cartoon: { color } });
+    if (!pdb) {
+      if (viewerRef.current) {
+        viewerRef.current.clear();
+        element.innerHTML = '';
+        viewerRef.current = null;
+      }
+      return;
     }
+
+    const viewer = $3Dmol.createViewer(element, { backgroundColor: '0xf5f3ef' });
+    viewer.addModel(pdb, 'pdb');
+    viewerRef.current = viewer;
+
+    return () => {
+      if (viewerRef.current) {
+        viewerRef.current.clear();
+        element.innerHTML = '';
+        viewerRef.current = null;
+      }
+    };
+  }, [pdb]);
+
+  // Update styles when residueConcepts, viewMode, selectedResidue, or activeConcepts change (preserves camera)
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !pdb) return;
 
     if (onResidueSelect) {
       viewer.setClickable({}, true, (atom: { resi: number; resn: string }) => {
@@ -78,17 +121,37 @@ export function ProteinViewer({
       });
     }
 
-    viewer.render();
+    const dimOpacity = selectedResidue != null ? 0.5 : undefined;
 
-    return () => {
-      viewer.clear();
-      element.innerHTML = '';
-    };
-  }, [pdb, residueConcepts, residueProjections, onResidueSelect, conceptColors]);
+    // Default style for residues not in the map
+    viewer.setStyle({}, getBaseStyle(viewMode, DEFAULT_COLOR, dimOpacity));
+
+    for (const [resi, concept] of Object.entries(residueConcepts)) {
+      const isActive = activeSet.has(concept);
+      const color = isActive ? (conceptColors[concept] ?? DEFAULT_COLOR) : DEFAULT_COLOR;
+      const resiNum = parseInt(String(resi), 10);
+      const isSelected = resiNum === selectedResidue;
+      const opacity = isSelected ? undefined : dimOpacity;
+
+      if (isSelected) {
+        viewer.setStyle(
+          { resi: resiNum },
+          { ...getBaseStyle(viewMode, color), stick: { color: HIGHLIGHT_COLOR, radius: 0.35 } }
+        );
+      } else {
+        viewer.setStyle({ resi: resiNum }, getBaseStyle(viewMode, color, opacity));
+      }
+    }
+
+    viewer.render();
+  }, [pdb, residueConcepts, residueProjections, onResidueSelect, viewMode, selectedResidue, conceptColors, activeSet]);
 
   if (!pdb) {
     return (
-      <div className="flex h-96 min-h-[384px] w-full items-center justify-center rounded-lg border border-dashed border-gray-600 bg-gray-800/30 text-gray-500">
+      <div
+        className="flex h-96 min-h-[384px] w-full items-center justify-center rounded text-[13px]"
+        style={{ backgroundColor: 'var(--bg-soft)', color: 'var(--text-muted)' }}
+      >
         No PDB structure loaded — use Load demo or Upload PDB
       </div>
     );
@@ -97,8 +160,8 @@ export function ProteinViewer({
   return (
     <div
       ref={containerRef}
-      className="h-96 w-full min-h-[384px] rounded-lg border border-gray-600 bg-gray-800 overflow-hidden"
-      style={{ position: 'relative' }}
+      className="h-96 w-full min-h-[384px] rounded overflow-hidden"
+      style={{ position: 'relative', backgroundColor: 'var(--bg-soft)' }}
     />
   );
 }
