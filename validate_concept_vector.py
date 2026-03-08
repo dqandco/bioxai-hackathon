@@ -15,27 +15,13 @@ Reports per-layer:
 
 import argparse
 import random
-from pathlib import Path
 
 import torch
 import pyarrow.parquet as pq
 from esm.models.esm3 import ESM3
 from esm.sdk.api import ESMProtein
 
-
-DATA_DIR = Path("data")
-
-CONCEPTS = {
-    "disulfide": ("disulfide_features.parquet", "disulfide_cys_indices", "free_cys_indices"),
-    "ss_helix": ("ss_features.parquet", "helix_indices", "coil_indices"),
-    "ss_sheet": ("ss_features.parquet", "sheet_indices", "coil_indices"),
-    "ss_helix_sheet": ("ss_features.parquet", "helix_indices", "sheet_indices"),
-    "sasa": ("sasa_features.parquet", "buried_indices", "exposed_indices"),
-    "ppi": ("ppi_features.parquet", "interface_indices", "non_interface_indices"),
-    "binding": ("binding_features.parquet", "binding_indices", "non_binding_indices"),
-    "ptm": ("ptm_features.parquet", "ptm_indices", "non_ptm_indices"),
-    "disorder": ("disorder_features.parquet", "disordered_indices", "ordered_indices"),
-}
+from concepts import CONCEPTS, DATA_DIR
 
 
 def compute_roc_auc(pos_scores: list[float], neg_scores: list[float]) -> float:
