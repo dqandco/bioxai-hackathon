@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import { ProteinViewer, CONCEPT_COLORS, type ViewMode } from './ProteinViewer'
 import { parsePdbSequence, chainResiKey, type ChainResi } from './pdbParser'
 
@@ -36,6 +36,17 @@ const CONCEPT_LABELS: Record<string, string> = {
   disorder: 'Disordered vs ordered',
 }
 
+const DEFAULT_OPTIMAL_LAYERS: Record<string, { layer: number; auc: number }> = {
+  binding:        { layer: 35, auc: 0.710 },
+  disorder:       { layer: 46, auc: 0.969 },
+  ppi:            { layer: 46, auc: 0.707 },
+  ptm:            { layer: 23, auc: 0.958 },
+  sasa:           { layer: 46, auc: 0.873 },
+  ss_helix:       { layer: 40, auc: 0.927 },
+  ss_helix_sheet: { layer: 46, auc: 0.987 },
+  ss_sheet:       { layer: 45, auc: 0.919 },
+}
+
 function App() {
   const [pdb, setPdb] = useState<string>('')
   const [pdbName, setPdbName] = useState<string>('')
@@ -43,6 +54,8 @@ function App() {
   const [seqIdxToResi, setSeqIdxToResi] = useState<ChainResi[]>([])
   const [residueConcepts, setResidueConcepts] = useState<ResidueConcepts>({})
   const [selectedLayer, setSelectedLayer] = useState(0)
+  const [autoMode, setAutoMode] = useState(true)
+  const [optimalLayers, setOptimalLayers] = useState<Record<string, { layer: number; auc: number }>>(DEFAULT_OPTIMAL_LAYERS)
   const [selectedResidue, setSelectedResidue] = useState<SelectedResidue | null>(null)
   const [uncheckedFallbackRank, setUncheckedFallbackRank] = useState(0)
   const [viewMode, setViewMode] = useState<ViewMode>('cartoon')
@@ -51,6 +64,23 @@ function App() {
   const [loading, setLoading] = useState(false)
 
   const nLayers = inferenceData?.n_layers ?? 0
+
+  // Fetch optimal layers on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/concepts/optimal-layers`)
+      .then(res => {
+        if (!res.ok) return null
+        return res.json()
+      })
+      .then(data => {
+        if (!data?.optimal_layers) return
+        setOptimalLayers(data.optimal_layers)
+        if (Object.keys(data.optimal_layers).length > 0) {
+          setAutoMode(true)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const runInference = useCallback(async (sequence: string) => {
     setError('')
@@ -149,7 +179,7 @@ function App() {
       return { residueConceptsForLayer: residueConcepts, residueProjectionsForLayer: {} as ResidueProjections }
     }
 
-    const layer = Math.min(selectedLayer, inferenceData.n_layers - 1)
+    const fallbackLayer = Math.min(selectedLayer, inferenceData.n_layers - 1)
     const concepts = inferenceData.concepts
     const projections = inferenceData.projections
 
@@ -167,6 +197,9 @@ function App() {
       const scores: Record<string, number> = {}
 
       for (const concept of concepts) {
+        const layer = autoMode && optimalLayers[concept] != null
+          ? Math.min(optimalLayers[concept].layer, inferenceData.n_layers - 1)
+          : fallbackLayer
         const layerScores = projections[concept]?.[seqIdx]
         const score = layerScores?.[layer] ?? 0
         scores[concept] = score
@@ -181,7 +214,7 @@ function App() {
     }
 
     return { residueConceptsForLayer: outConcepts, residueProjectionsForLayer: outProjections }
-  }, [inferenceData, seqIdxToResi, selectedLayer, residueConcepts])
+  }, [inferenceData, seqIdxToResi, selectedLayer, autoMode, optimalLayers, residueConcepts])
 
   const handleResidueSelect = useCallback(
     (chain: string, resi: number, resn: string, oneLetter: string, conceptScores: Record<string, number>) => {
@@ -238,18 +271,44 @@ function App() {
 
         {inferenceData && nLayers > 1 && (
           <div className="rounded p-4" style={{ backgroundColor: 'var(--bg-card)' }}>
-            <label className="block text-[12px] font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>
-              Layer {effectiveLayer + 1} / {nLayers}
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={nLayers - 1}
-              value={effectiveLayer}
-              onChange={(e) => setSelectedLayer(parseInt(e.target.value, 10))}
-              className="w-full max-w-md"
-              style={{ accentColor: 'var(--accent)' }}
-            />
+            <div className="flex items-center gap-4 mb-2">
+              <label className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                {autoMode ? 'Auto (optimal layer per concept)' : `Layer ${effectiveLayer + 1} / ${nLayers}`}
+              </label>
+              {Object.keys(optimalLayers).length > 0 && (
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoMode}
+                    onChange={(e) => setAutoMode(e.target.checked)}
+                    className="h-3 w-3 rounded-sm accent-[var(--accent)]"
+                  />
+                  <span className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>Auto</span>
+                </label>
+              )}
+            </div>
+            {!autoMode && (
+              <input
+                type="range"
+                min={0}
+                max={nLayers - 1}
+                value={effectiveLayer}
+                onChange={(e) => setSelectedLayer(parseInt(e.target.value, 10))}
+                className="w-full max-w-md"
+                style={{ accentColor: 'var(--accent)' }}
+              />
+            )}
+            {autoMode && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                {inferenceData.concepts
+                  .filter(c => optimalLayers[c] != null)
+                  .map(c => (
+                    <span key={c}>
+                      {c}: L{optimalLayers[c].layer + 1} <span className="opacity-60">(AUC {optimalLayers[c].auc.toFixed(3)})</span>
+                    </span>
+                  ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -353,7 +412,9 @@ function App() {
                       Clear
                     </button>
                   </div>
-                  <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>Scores at layer {effectiveLayer + 1}</p>
+                  <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
+                    {autoMode ? 'Scores at optimal layer per concept' : `Scores at layer ${effectiveLayer + 1}`}
+                  </p>
                   <div className="space-y-0.5">
                     {Object.entries(selectedResidue.conceptScores)
                       .sort(([, a], [, b]) => b - a)

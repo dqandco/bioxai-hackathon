@@ -3,6 +3,7 @@
 import asyncio
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pyarrow.parquet as pq
 from fastapi import FastAPI, HTTPException, Query
@@ -11,6 +12,8 @@ from pydantic import BaseModel
 
 from concepts import CONCEPTS, DATA_DIR, list_computed_concepts, load_concept_vectors
 from inference import ESM3Engine, MAX_SEQUENCE_LENGTH
+
+VAL_DIR = Path("val")
 
 # ---------------------------------------------------------------------------
 # Globals
@@ -81,6 +84,22 @@ def get_concepts():
             "has_vectors": name in computed,
         })
     return {"concepts": items}
+
+
+@app.get("/concepts/optimal-layers")
+def get_optimal_layers():
+    """Parse val/*.txt files to find the best layer (by AUC) for each concept."""
+    best_layer_re = re.compile(r"Best layer:\s*(\d+)\s*\(AUC=([\d.]+)\)")
+    result: dict[str, dict] = {}
+    for name in CONCEPTS:
+        path = VAL_DIR / f"{name}.txt"
+        if not path.exists():
+            continue
+        text = path.read_text()
+        m = best_layer_re.search(text)
+        if m:
+            result[name] = {"layer": int(m.group(1)), "auc": float(m.group(2))}
+    return {"optimal_layers": result}
 
 
 @app.get("/concepts/{name}/vectors")
