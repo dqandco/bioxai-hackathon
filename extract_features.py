@@ -474,6 +474,120 @@ def _save_parquet(records: list[dict], columns: list[str], path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Single-file processing (for parallelization)
+# ---------------------------------------------------------------------------
+
+
+def process_single_cif(cif_path: Path) -> dict[str, list[dict]]:
+    """
+    Process one mmCIF file and return records for all traits.
+    Returns dict with keys: disulfide, ss, sasa, ppi, binding, ptm, disorder.
+    Each value is a list of record dicts (or empty list).
+    """
+    pdb_id = cif_path.stem.upper()
+    parser = MMCIFParser(QUIET=True)
+
+    try:
+        mmcif_dict = MMCIF2Dict(str(cif_path))
+        structure = parser.get_structure(pdb_id, str(cif_path))
+        chain_data = build_chain_data(structure, mmcif_dict)
+
+        if not chain_data:
+            return {k: [] for k in ("disulfide", "ss", "sasa", "ppi", "binding", "ptm", "disorder")}
+
+        disulfide_records = []
+        ss_records = []
+        sasa_records = []
+        ppi_records = []
+        binding_records = []
+        ptm_records = []
+        disorder_records = []
+
+        for cid, idx_data in extract_disulfide(mmcif_dict, chain_data).items():
+            disulfide_records.append({
+                "pdb_id": pdb_id, "chain_id": cid,
+                "sequence": chain_data[cid]["sequence"],
+                "seq_length": len(chain_data[cid]["sequence"]),
+                **idx_data,
+                "n_disulfide_cys": len(idx_data["disulfide_cys_indices"]),
+                "n_free_cys": len(idx_data["free_cys_indices"]),
+            })
+
+        for cid, idx_data in extract_secondary_structure(mmcif_dict, chain_data).items():
+            ss_records.append({
+                "pdb_id": pdb_id, "chain_id": cid,
+                "sequence": chain_data[cid]["sequence"],
+                "seq_length": len(chain_data[cid]["sequence"]),
+                **idx_data,
+                "n_helix": len(idx_data["helix_indices"]),
+                "n_sheet": len(idx_data["sheet_indices"]),
+                "n_coil": len(idx_data["coil_indices"]),
+            })
+
+        for cid, idx_data in extract_solvent_accessibility(structure, chain_data).items():
+            sasa_records.append({
+                "pdb_id": pdb_id, "chain_id": cid,
+                "sequence": chain_data[cid]["sequence"],
+                "seq_length": len(chain_data[cid]["sequence"]),
+                **idx_data,
+                "n_buried": len(idx_data["buried_indices"]),
+                "n_exposed": len(idx_data["exposed_indices"]),
+            })
+
+        for cid, idx_data in extract_ppi_sites(structure, chain_data).items():
+            ppi_records.append({
+                "pdb_id": pdb_id, "chain_id": cid,
+                "sequence": chain_data[cid]["sequence"],
+                "seq_length": len(chain_data[cid]["sequence"]),
+                **idx_data,
+                "n_interface": len(idx_data["interface_indices"]),
+                "n_non_interface": len(idx_data["non_interface_indices"]),
+            })
+
+        for cid, idx_data in extract_binding_sites(structure, chain_data).items():
+            binding_records.append({
+                "pdb_id": pdb_id, "chain_id": cid,
+                "sequence": chain_data[cid]["sequence"],
+                "seq_length": len(chain_data[cid]["sequence"]),
+                **idx_data,
+                "n_binding": len(idx_data["binding_indices"]),
+                "n_non_binding": len(idx_data["non_binding_indices"]),
+            })
+
+        for cid, idx_data in extract_ptm_sites(mmcif_dict, chain_data).items():
+            ptm_records.append({
+                "pdb_id": pdb_id, "chain_id": cid,
+                "sequence": chain_data[cid]["sequence"],
+                "seq_length": len(chain_data[cid]["sequence"]),
+                **idx_data,
+                "n_ptm": len(idx_data["ptm_indices"]),
+                "n_non_ptm": len(idx_data["non_ptm_indices"]),
+            })
+
+        for cid, idx_data in extract_disorder(mmcif_dict, chain_data).items():
+            disorder_records.append({
+                "pdb_id": pdb_id, "chain_id": cid,
+                "sequence": idx_data.pop("sequence"),
+                "seq_length": len(idx_data["disordered_indices"]) + len(idx_data["ordered_indices"]),
+                **idx_data,
+                "n_disordered": len(idx_data["disordered_indices"]),
+                "n_ordered": len(idx_data["ordered_indices"]),
+            })
+
+        return {
+            "disulfide": disulfide_records,
+            "ss": ss_records,
+            "sasa": sasa_records,
+            "ppi": ppi_records,
+            "binding": binding_records,
+            "ptm": ptm_records,
+            "disorder": disorder_records,
+        }
+    except Exception:
+        return {k: [] for k in ("disulfide", "ss", "sasa", "ppi", "binding", "ptm", "disorder")}
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

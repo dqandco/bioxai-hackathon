@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+:root {
+  --bg-soft: #f5f3ef;
+  --bg-card: #ebe8e3;
+  --text-primary: #2d2a26;
+  --text-secondary: #5c5854;
+  --text-muted: #8a8580;
+  --accent: #5a6b4a;
+  --accent-hover: #4a5a3d;
+}
+
+body {
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-size: 14px;
+  background-color: var(--bg-soft);
+  color: var(--text-primary);
+}
+
+.btn-accent {
+  background-color: var(--accent);
+}
+.btn-accent:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+}
