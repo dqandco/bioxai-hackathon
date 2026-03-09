@@ -158,11 +158,15 @@ def main():
                     direction = concept_dirs[layer_idx].to(hidden.device)
 
                     for idx in pos_indices:
-                        proj = (hidden[0, idx + 1, :].float() @ direction).item()
+                        vec = hidden[0, idx + 1, :].float()
+                        vec = vec / vec.norm()
+                        proj = (vec @ direction).item()
                         pos_projections[layer_idx].append(proj)
 
                     for idx in neg_indices:
-                        proj = (hidden[0, idx + 1, :].float() @ direction).item()
+                        vec = hidden[0, idx + 1, :].float()
+                        vec = vec / vec.norm()
+                        proj = (vec @ direction).item()
                         neg_projections[layer_idx].append(proj)
 
                 captured.clear()

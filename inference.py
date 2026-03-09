@@ -108,7 +108,8 @@ class ESM3Engine:
                 direction = concept_dirs[layer_idx]
                 # Vectorized: extract all residue vectors at once (skip BOS at index 0)
                 residue_vecs = hidden[0, 1 : n_residues + 1, :].float()  # (n_residues, D)
-                projs = (residue_vecs @ direction).tolist()  # list of n_residues floats
+                residue_vecs = residue_vecs / residue_vecs.norm(dim=1, keepdim=True)
+                projs = (residue_vecs @ direction).tolist()  # list of n_residues floats (cosine similarity)
                 for r_idx in range(n_residues):
                     residue_projections[r_idx].append(projs[r_idx])
             projections[concept_name] = residue_projections
